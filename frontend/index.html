@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HazardWatch — US Disaster Risk Dashboard</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Thesys C1 SDK — renders AI responses as interactive components -->
+  <script src="https://cdn.thesys.dev/serve/v0/thesys.js" defer></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+    header span { font-size: 0.8rem; color: #8b949e; }
+
+    .badge {
+      font-size: 0.65rem;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .badge-live { background: #238636; color: #fff; }
+
+    .layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Map panel ── */
+    .map-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .map-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      flex-wrap: wrap;
+    }
+
+    .map-toolbar label { font-size: 0.8rem; color: #8b949e; }
+
+    .disaster-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    .disaster-btn {
+      padding: 4px 12px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #e6edf3;
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .disaster-btn:hover { background: #30363d; }
+    .disaster-btn.active { border-color: #388bfd; background: #1f3a5f; color: #58a6ff; }
+
+    #map { flex: 1; }
+
+    /* ── Chat panel ── */
+    .chat-panel {
+      width: 380px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid #30363d;
+      background: #0d1117;
+    }
+
+    .chat-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid #30363d;
+      background: #161b22;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .chat-header small { color: #8b949e; font-weight: 400; font-size: 0.75rem; display: block; margin-top: 2px; }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .msg {
+      max-width: 100%;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.84rem;
+      line-height: 1.55;
+    }
+    .msg-user {
+      background: #1f3a5f;
+      border: 1px solid #388bfd33;
+      align-self: flex-end;
+      color: #cce0ff;
+    }
+    .msg-assistant {
+      background: #161b22;
+      border: 1px solid #30363d;
+      align-self: flex-start;
+    }
+    .msg-system {
+      background: transparent;
+      border: none;
+      color: #8b949e;
+      font-size: 0.75rem;
+      align-self: center;
+    }
+
+    /* Thesys C1 replaces .msg-assistant content with rich components */
+    .thesys-render { width: 100%; }
+
+    .chat-input-row {
+      display: flex;
+      gap: 8px;
+      padding: 12px 16px;
+      border-top: 1px solid #30363d;
+      background: #161b22;
+    }
+
+    #chat-input {
+      flex: 1;
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: #e6edf3;
+      font-size: 0.84rem;
+      resize: none;
+      outline: none;
+      min-height: 40px;
+      max-height: 120px;
+    }
+    #chat-input:focus { border-color: #388bfd; }
+
+    #send-btn {
+      padding: 8px 16px;
+      background: #238636;
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 0.84rem;
+      cursor: pointer;
+      transition: background 0.15s;
+      align-self: flex-end;
+    }
+    #send-btn:hover { background: #2ea043; }
+    #send-btn:disabled { background: #21262d; color: #8b949e; cursor: default; }
+
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid #30363d;
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Legend */
+    .legend {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 0.75rem;
+      color: #e6edf3;
+    }
+    .legend-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+    .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🌐 HazardWatch</h1>
+  <span>US weather-driven disaster risk</span>
+  <span class="badge badge-live">LIVE</span>
+</header>
+
+<div class="layout">
+
+  <!-- Map panel -->
+  <div class="map-panel">
+    <div class="map-toolbar">
+      <label>Disaster type:</label>
+      <div class="disaster-btns" id="disaster-btns">
+        <button class="disaster-btn active" data-type="wildfire">Wildfire</button>
+        <button class="disaster-btn" data-type="flood">Flood</button>
+        <button class="disaster-btn" data-type="extreme_heat">Extreme Heat</button>
+        <button class="disaster-btn" data-type="winter_storm">Winter Storm</button>
+        <button class="disaster-btn" data-type="high_wind">High Wind</button>
+      </div>
+    </div>
+    <div id="map"></div>
+  </div>
+
+  <!-- Chat panel -->
+  <div class="chat-panel">
+    <div class="chat-header">
+      Ask HazardWatch
+      <small>Powered by Groq + Thesys C1</small>
+    </div>
+    <div class="chat-messages" id="chat-messages">
+      <div class="msg msg-system">Ask about current risk levels, trends, or compare cities.</div>
+    </div>
+    <div class="chat-input-row">
+      <textarea id="chat-input" placeholder="e.g. Where is wildfire risk highest right now?" rows="1"></textarea>
+      <button id="send-btn">Ask</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── Map setup ────────────────────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: true }).setView([38, -96], 4);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© OpenStreetMap © CARTO',
+  maxZoom: 18,
+}).addTo(map);
+
+// Legend
+const legend = L.control({ position: 'bottomleft' });
+legend.onAdd = () => {
+  const div = L.DomUtil.create('div', 'legend');
+  div.innerHTML = `
+    <strong>Risk score</strong>
+    <div class="legend-row"><div class="legend-dot" style="background:#2ea043"></div>Low (0–33)</div>
+    <div class="legend-row"><div class="legend-dot" style="background:#e3b341"></div>Moderate (34–66)</div>
+    <div class="legend-row"><div class="legend-dot" style="background:#f85149"></div>High (67–100)</div>
+  `;
+  return div;
+};
+legend.addTo(map);
+
+function scoreColor(score) {
+  if (score >= 67) return '#f85149';
+  if (score >= 34) return '#e3b341';
+  return '#2ea043';
+}
+
+let circles = [];
+let activeType = 'wildfire';
+
+async function loadMap(disasterType) {
+  circles.forEach(c => map.removeLayer(c));
+  circles = [];
+
+  try {
+    const res = await fetch(`/risks/map/${disasterType}`);
+    if (!res.ok) return;
+    const points = await res.json();
+    points.forEach(({ lat, lon, score }) => {
+      const c = L.circleMarker([lat, lon], {
+        radius: 10 + score / 10,
+        color: scoreColor(score),
+        fillColor: scoreColor(score),
+        fillOpacity: 0.7,
+        weight: 1.5,
+      });
+      c.bindPopup(`<strong>${disasterType.replace('_', ' ')}</strong><br>Score: ${score.toFixed(0)}/100`);
+      c.addTo(map);
+      circles.push(c);
+    });
+  } catch (e) {
+    console.warn('Map load failed:', e);
+  }
+}
+
+// Disaster type buttons
+document.getElementById('disaster-btns').addEventListener('click', e => {
+  const btn = e.target.closest('.disaster-btn');
+  if (!btn) return;
+  document.querySelectorAll('.disaster-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  activeType = btn.dataset.type;
+  loadMap(activeType);
+});
+
+loadMap(activeType);
+setInterval(() => loadMap(activeType), 5 * 60 * 1000); // refresh every 5 min
+
+
+// ── Chat ─────────────────────────────────────────────────────────────────────
+const messagesEl = document.getElementById('chat-messages');
+const inputEl    = document.getElementById('chat-input');
+const sendBtn    = document.getElementById('send-btn');
+
+function appendMsg(role, html) {
+  const div = document.createElement('div');
+  div.className = `msg msg-${role}`;
+  div.innerHTML = html;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function escapeHtml(text) {
+  return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Simple markdown → HTML for assistant replies (bold, code, newlines)
+function renderMarkdown(text) {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code style="background:#21262d;padding:1px 4px;border-radius:3px">$1</code>')
+    .replace(/\n/g, '<br>');
+}
+
+async function sendQuestion() {
+  const question = inputEl.value.trim();
+  if (!question) return;
+
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  sendBtn.disabled = true;
+
+  appendMsg('user', escapeHtml(question));
+
+  const thinkingEl = appendMsg('assistant', '<span class="spinner"></span>Thinking…');
+
+  try {
+    const res = await fetch('/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      thinkingEl.innerHTML = `<span style="color:#f85149">Error: ${escapeHtml(err)}</span>`;
+      return;
+    }
+
+    const { answer, data } = await res.json();
+
+    // ── Thesys C1 rendering ──────────────────────────────────────────────────
+    // If the Thesys SDK is loaded, hand off the structured response for
+    // rich component rendering (charts, tables, maps). Falls back to plain text.
+    if (window.Thesys && window.Thesys.render) {
+      thinkingEl.innerHTML = '';
+      thinkingEl.classList.add('thesys-render');
+      window.Thesys.render(thinkingEl, { answer, data });
+    } else {
+      thinkingEl.innerHTML = renderMarkdown(answer);
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
+  } catch (e) {
+    thinkingEl.innerHTML = `<span style="color:#f85149">Request failed: ${escapeHtml(e.message)}</span>`;
+  } finally {
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+}
+
+sendBtn.addEventListener('click', sendQuestion);
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuestion(); }
+});
+
+// Auto-resize textarea
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = inputEl.scrollHeight + 'px';
+});
+</script>
+
+</body>
+</html>

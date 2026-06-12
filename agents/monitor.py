@@ -14,7 +14,7 @@ import logging
 import os
 from typing import Any
 
-import anthropic
+from groq import Groq
 from dotenv import load_dotenv
 
 from api.db import get_top_risks, get_trend
@@ -23,8 +23,8 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
-ALERT_THRESHOLD = 70       # score that triggers investigation
-TREND_THRESHOLD = 15       # rising delta that flags urgency
+ALERT_THRESHOLD = 70
+TREND_THRESHOLD = 15
 
 DISASTER_TYPES = ["wildfire", "flood", "extreme_heat", "winter_storm", "high_wind"]
 
@@ -41,79 +41,87 @@ Your job:
    types involved, current score, trend direction, and a plain-English summary
    a homeowner or fire department dispatcher would understand.
 
-Be conservative: only alert when score ≥ {threshold} OR a score is rising rapidly
-(trend delta ≥ {trend}). Do not alert on stable moderate risk.
+Be conservative: only alert when score >= {threshold} OR a score is rising rapidly
+(trend delta >= {trend}). Do not alert on stable moderate risk.
 """.format(threshold=ALERT_THRESHOLD, trend=TREND_THRESHOLD)
 
 # ---------------------------------------------------------------------------
-# Tool definitions
+# Tool definitions (OpenAI/Groq format)
 # ---------------------------------------------------------------------------
 
 TOOLS: list[dict] = [
     {
-        "name": "get_top_risks",
-        "description": (
-            "Return the highest-scoring grid points for a disaster type "
-            "in the last hour. Use this to find which locations need attention."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "disaster_type": {
-                    "type": "string",
-                    "enum": DISASTER_TYPES,
-                    "description": "Disaster type to query.",
+        "type": "function",
+        "function": {
+            "name": "get_top_risks",
+            "description": (
+                "Return the highest-scoring grid points for a disaster type "
+                "in the last hour. Use this to find which locations need attention."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "disaster_type": {
+                        "type": "string",
+                        "enum": DISASTER_TYPES,
+                        "description": "Disaster type to query.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max number of locations to return (default 5).",
+                    },
                 },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max number of locations to return (default 5).",
-                    "default": 5,
-                },
+                "required": ["disaster_type"],
             },
-            "required": ["disaster_type"],
         },
     },
     {
-        "name": "get_trend",
-        "description": (
-            "Return the score delta over the last N hours for a specific location "
-            "and disaster type. Positive delta = rising risk."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "lat":           {"type": "number", "description": "Latitude."},
-                "lon":           {"type": "number", "description": "Longitude."},
-                "disaster_type": {"type": "string", "enum": DISASTER_TYPES},
-                "hours":         {"type": "integer", "description": "Look-back window in hours (default 6).", "default": 6},
+        "type": "function",
+        "function": {
+            "name": "get_trend",
+            "description": (
+                "Return the score delta over the last N hours for a specific location "
+                "and disaster type. Positive delta = rising risk."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lat":           {"type": "number", "description": "Latitude."},
+                    "lon":           {"type": "number", "description": "Longitude."},
+                    "disaster_type": {"type": "string", "enum": DISASTER_TYPES},
+                    "hours":         {"type": "integer", "description": "Look-back window in hours (default 6)."},
+                },
+                "required": ["lat", "lon", "disaster_type"],
             },
-            "required": ["lat", "lon", "disaster_type"],
         },
     },
     {
-        "name": "send_alert",
-        "description": "Fire an alert for a high-risk situation.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "lat":           {"type": "number"},
-                "lon":           {"type": "number"},
-                "location_name": {"type": "string", "description": "Human-readable location name."},
-                "disaster_types": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "One or more disaster types involved.",
+        "type": "function",
+        "function": {
+            "name": "send_alert",
+            "description": "Fire an alert for a high-risk situation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lat":            {"type": "number"},
+                    "lon":            {"type": "number"},
+                    "location_name":  {"type": "string", "description": "Human-readable location name."},
+                    "disaster_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "One or more disaster types involved.",
+                    },
+                    "max_score":    {"type": "number", "description": "Highest current risk score (0-100)."},
+                    "trend_delta":  {"type": "number", "description": "Score change over the look-back window."},
+                    "summary":      {"type": "string", "description": "Plain-English alert message."},
+                    "severity":     {
+                        "type": "string",
+                        "enum": ["watch", "warning", "emergency"],
+                        "description": "watch=elevated, warning=high, emergency=extreme/imminent.",
+                    },
                 },
-                "max_score":     {"type": "number", "description": "Highest current risk score (0–100)."},
-                "trend_delta":   {"type": "number", "description": "Score change over the look-back window."},
-                "summary":       {"type": "string", "description": "Plain-English alert message."},
-                "severity":      {
-                    "type": "string",
-                    "enum": ["watch", "warning", "emergency"],
-                    "description": "watch=elevated, warning=high, emergency=extreme/imminent.",
-                },
+                "required": ["lat", "lon", "disaster_types", "max_score", "summary", "severity"],
             },
-            "required": ["lat", "lon", "disaster_types", "max_score", "summary", "severity"],
         },
     },
 ]
@@ -163,58 +171,68 @@ def _deliver_alert(alert: dict) -> dict:
 
 def run() -> list[dict]:
     """Run the monitor agent. Returns list of alerts that were fired."""
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    client = Groq(api_key=os.environ["GROQ_API_KEY"])
     messages: list[dict] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
             "content": (
                 "Ingest complete. Check all disaster types for high or rising risk "
                 "and send alerts where warranted."
             ),
-        }
+        },
     ]
 
     alerts_fired: list[dict] = []
 
     while True:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
+        response = client.chat.completions.create(
+            model="llama3-groq-70b-8192-tool-use-preview",
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
             tools=TOOLS,
+            tool_choice="auto",
             messages=messages,
         )
 
-        # Append assistant turn
-        messages.append({"role": "assistant", "content": response.content})
+        msg = response.choices[0].message
+        finish_reason = response.choices[0].finish_reason
 
-        if response.stop_reason == "end_turn":
+        # Append assistant turn to history
+        assistant_turn: dict = {"role": "assistant", "content": msg.content or ""}
+        if msg.tool_calls:
+            assistant_turn["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in msg.tool_calls
+            ]
+        messages.append(assistant_turn)
+
+        if finish_reason == "stop":
             break
 
-        if response.stop_reason != "tool_use":
-            log.warning("Unexpected stop_reason: %s", response.stop_reason)
+        if finish_reason != "tool_calls":
+            log.warning("Unexpected finish_reason: %s", finish_reason)
             break
 
-        # Execute all tool calls and collect results
-        tool_results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
+        # Execute tool calls and collect results
+        for tc in msg.tool_calls:
             try:
-                result = _dispatch_tool(block.name, block.input)
-                if block.name == "send_alert":
-                    alerts_fired.append(block.input)
+                inputs = json.loads(tc.function.arguments)
+                result = _dispatch_tool(tc.function.name, inputs)
+                if tc.function.name == "send_alert":
+                    alerts_fired.append(inputs)
             except Exception as exc:
                 result = {"error": str(exc)}
-                log.error("Tool %s failed: %s", block.name, exc)
+                log.error("Tool %s failed: %s", tc.function.name, exc)
 
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
                 "content": json.dumps(result, default=str),
             })
-
-        messages.append({"role": "user", "content": tool_results})
 
     log.info("Monitor complete — %d alert(s) fired.", len(alerts_fired))
     return alerts_fired

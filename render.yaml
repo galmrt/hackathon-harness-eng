@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: hazardwatch
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CLICKHOUSE_HOST
+        sync: false
+      - key: CLICKHOUSE_PORT
+        value: "8443"
+      - key: CLICKHOUSE_DB
+        value: hazardwatch
+      - key: CLICKHOUSE_USER
+        value: default
+      - key: CLICKHOUSE_PASSWORD
+        sync: false
+
+  - type: cron
+    name: hazardwatch-ingest
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    schedule: "0 * * * *"
+    startCommand: python -m ingest.poller
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CLICKHOUSE_HOST
+        sync: false
+      - key: CLICKHOUSE_PORT
+        value: "8443"
+      - key: CLICKHOUSE_DB
+        value: hazardwatch
+      - key: CLICKHOUSE_USER
+        value: default
+      - key: CLICKHOUSE_PASSWORD
+        sync: false
