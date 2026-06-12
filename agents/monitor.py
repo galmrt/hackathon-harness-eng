@@ -15,14 +15,15 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
-load_dotenv()  # must run before Langfuse initializes
-if not os.environ.get("LANGFUSE_HOST") and os.environ.get("LANGFUSE_BASE_URL"):
-    os.environ["LANGFUSE_HOST"] = os.environ["LANGFUSE_BASE_URL"]
+load_dotenv()
 
 import litellm
-from langfuse import observe, get_client as get_langfuse
+from langfuse.decorators import observe, langfuse_context
 
 from api.db import get_top_risks, get_trend
+
+litellm.success_callback = ["langfuse"]
+litellm.failure_callback = ["langfuse"]
 
 log = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ TOOLS: list[dict] = [
 
 @observe(name="tool-call")
 def _dispatch_tool(name: str, inputs: dict) -> Any:
-    get_langfuse().update_current_span(input={"tool": name, "args": inputs})
+    langfuse_context.update_current_observation(input={"tool": name, "args": inputs})
     if name == "get_top_risks":
         return get_top_risks(
             disaster_type=inputs["disaster_type"],
@@ -163,32 +164,27 @@ def _deliver_alert(alert: dict) -> dict:
     return {"status": "sent", "alert": alert}
 
 
-@observe(as_type="generation", name="gemini-llm")
 def _llm_call(messages: list[dict]) -> Any:
-    response = litellm.completion(
+    return litellm.completion(
         model=MODEL,
         api_key=os.environ["GEMINI_API_KEY"],
         max_tokens=4096,
         tools=TOOLS,
         tool_choice="auto",
         messages=messages,
+        metadata={
+            "trace_id": langfuse_context.get_current_trace_id(),
+            "parent_observation_id": langfuse_context.get_current_observation_id(),
+            "generation_name": "gemini-llm",
+        },
     )
-    if response.usage:
-        get_langfuse().update_current_generation(
-            model=MODEL,
-            usage_details={
-                "input_tokens": response.usage.prompt_tokens,
-                "output_tokens": response.usage.completion_tokens,
-            },
-        )
-    return response
 
 
 @observe(name="monitor-run")
 def run() -> list[dict]:
     """Run the monitor agent. Returns list of alerts that were fired."""
     trigger = "Ingest complete. Check all disaster types for high or rising risk and send alerts where warranted."
-    get_langfuse().update_current_span(input=trigger)
+    langfuse_context.update_current_observation(input=trigger)
 
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -238,8 +234,8 @@ def run() -> list[dict]:
             })
 
     log.info("Monitor complete — %d alert(s) fired.", len(alerts_fired))
-    get_langfuse().update_current_span(output={"alerts_fired": len(alerts_fired), "alerts": alerts_fired})
-    get_langfuse().flush()
+    langfuse_context.update_current_observation(output={"alerts_fired": len(alerts_fired), "alerts": alerts_fired})
+    langfuse_context.flush()
     return alerts_fired
 
 
