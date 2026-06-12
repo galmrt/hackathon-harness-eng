@@ -15,11 +15,11 @@ def main():
     password = os.environ.get("CLICKHOUSE_PASSWORD", "")
 
     # Connect without db to create it
-    client = clickhouse_connect.get_client(host=host, port=port, username=user, password=password)
+    client = clickhouse_connect.get_client(host=host, port=port, username=user, password=password, verify=False)
     client.command(f"CREATE DATABASE IF NOT EXISTS {db}")
     print(f"Database '{db}' ready.")
 
-    client = clickhouse_connect.get_client(host=host, port=port, database=db, username=user, password=password)
+    client = clickhouse_connect.get_client(host=host, port=port, database=db, username=user, password=password, verify=False)
     client.command("""
         CREATE TABLE IF NOT EXISTS risk_scores (
             lat           Float64,

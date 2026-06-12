@@ -12,6 +12,7 @@ def get_client():
         database=os.environ.get("CLICKHOUSE_DB", "hazardwatch"),
         username=os.environ.get("CLICKHOUSE_USER", "default"),
         password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
+        verify=False,
     )
 
 
