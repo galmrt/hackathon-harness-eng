@@ -12,19 +12,21 @@ import logging
 import os
 from typing import Any
 
+from dotenv import load_dotenv
+load_dotenv()  # must run before Langfuse initializes
+if not os.environ.get("LANGFUSE_HOST") and os.environ.get("LANGFUSE_BASE_URL"):
+    os.environ["LANGFUSE_HOST"] = os.environ["LANGFUSE_BASE_URL"]
+
 import litellm
 import httpx
-from dotenv import load_dotenv
 from langfuse import observe, get_client as get_langfuse
 
 from api.db import check_cache, get_top_risks, get_trend, query_point
 from ingest.poller import fetch_and_store_point
 
-load_dotenv()
-
 log = logging.getLogger(__name__)
 
-MODEL = "gemini/gemini-1.5-flash"
+MODEL = "gemini/gemini-2.5-flash"
 DISASTER_TYPES = ["wildfire", "flood", "extreme_heat", "winter_storm", "high_wind"]
 
 SYSTEM_PROMPT = """You are HazardWatch's data analyst. You answer questions about
@@ -254,7 +256,7 @@ def ask(question: str) -> dict:
     Returns:
         {"answer": str, "data": list[dict]}
     """
-    get_langfuse().update_current_observation(input=question)
+    get_langfuse().update_current_span(input=question)
 
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -303,7 +305,7 @@ def ask(question: str) -> dict:
             })
 
     answer = msg.content or ""
-    get_langfuse().update_current_observation(output=answer)
+    get_langfuse().update_current_span(output=answer)
     get_langfuse().flush()
     return {"answer": answer, "data": collected_data}
 

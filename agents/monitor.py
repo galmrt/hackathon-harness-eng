@@ -14,17 +14,19 @@ import logging
 import os
 from typing import Any
 
-import litellm
 from dotenv import load_dotenv
+load_dotenv()  # must run before Langfuse initializes
+if not os.environ.get("LANGFUSE_HOST") and os.environ.get("LANGFUSE_BASE_URL"):
+    os.environ["LANGFUSE_HOST"] = os.environ["LANGFUSE_BASE_URL"]
+
+import litellm
 from langfuse import observe, get_client as get_langfuse
 
 from api.db import get_top_risks, get_trend
 
-load_dotenv()
-
 log = logging.getLogger(__name__)
 
-MODEL = "gemini/gemini-1.5-flash"
+MODEL = "gemini/gemini-2.5-flash"
 ALERT_THRESHOLD = 70
 TREND_THRESHOLD = 15
 
@@ -127,7 +129,7 @@ TOOLS: list[dict] = [
 
 @observe(name="tool-call")
 def _dispatch_tool(name: str, inputs: dict) -> Any:
-    get_langfuse().update_current_observation(input={"tool": name, "args": inputs})
+    get_langfuse().update_current_span(input={"tool": name, "args": inputs})
     if name == "get_top_risks":
         return get_top_risks(
             disaster_type=inputs["disaster_type"],
@@ -172,7 +174,7 @@ def _llm_call(messages: list[dict]) -> Any:
         messages=messages,
     )
     if response.usage:
-        get_langfuse().update_current_observation(
+        get_langfuse().update_current_generation(
             model=MODEL,
             usage_details={
                 "input_tokens": response.usage.prompt_tokens,
@@ -186,7 +188,7 @@ def _llm_call(messages: list[dict]) -> Any:
 def run() -> list[dict]:
     """Run the monitor agent. Returns list of alerts that were fired."""
     trigger = "Ingest complete. Check all disaster types for high or rising risk and send alerts where warranted."
-    get_langfuse().update_current_observation(input=trigger)
+    get_langfuse().update_current_span(input=trigger)
 
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -236,7 +238,7 @@ def run() -> list[dict]:
             })
 
     log.info("Monitor complete — %d alert(s) fired.", len(alerts_fired))
-    get_langfuse().update_current_observation(output={"alerts_fired": len(alerts_fired), "alerts": alerts_fired})
+    get_langfuse().update_current_span(output={"alerts_fired": len(alerts_fired), "alerts": alerts_fired})
     get_langfuse().flush()
     return alerts_fired
 
