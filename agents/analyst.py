@@ -190,7 +190,7 @@ def _geocode(place: str) -> dict:
 
 @observe(name="tool-call")
 def _dispatch_tool(name: str, inputs: dict) -> Any:
-    get_langfuse().update_current_observation(input={"tool": name, "args": inputs})
+    get_langfuse().update_current_span(input={"tool": name, "args": inputs})
     if name == "geocode":
         return _geocode(inputs["place"])
     if name == "check_cache":
@@ -236,7 +236,7 @@ def _llm_call(messages: list[dict]) -> Any:
         messages=messages,
     )
     if response.usage:
-        get_langfuse().update_current_observation(
+        get_langfuse().update_current_generation(
             model=MODEL,
             usage_details={
                 "input_tokens": response.usage.prompt_tokens,

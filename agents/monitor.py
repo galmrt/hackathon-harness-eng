@@ -14,8 +14,9 @@ import logging
 import os
 from typing import Any
 
-from groq import Groq
+import litellm
 from dotenv import load_dotenv
+from langfuse import observe, get_client as get_langfuse
 
 from api.db import get_top_risks, get_trend
 
@@ -23,6 +24,7 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
+MODEL = "gemini/gemini-1.5-flash"
 ALERT_THRESHOLD = 70
 TREND_THRESHOLD = 15
 
@@ -44,10 +46,6 @@ Your job:
 Be conservative: only alert when score >= {threshold} OR a score is rising rapidly
 (trend delta >= {trend}). Do not alert on stable moderate risk.
 """.format(threshold=ALERT_THRESHOLD, trend=TREND_THRESHOLD)
-
-# ---------------------------------------------------------------------------
-# Tool definitions (OpenAI/Groq format)
-# ---------------------------------------------------------------------------
 
 TOOLS: list[dict] = [
     {
@@ -127,11 +125,9 @@ TOOLS: list[dict] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Tool dispatch
-# ---------------------------------------------------------------------------
-
+@observe(name="tool-call")
 def _dispatch_tool(name: str, inputs: dict) -> Any:
+    get_langfuse().update_current_observation(input={"tool": name, "args": inputs})
     if name == "get_top_risks":
         return get_top_risks(
             disaster_type=inputs["disaster_type"],
@@ -165,39 +161,45 @@ def _deliver_alert(alert: dict) -> dict:
     return {"status": "sent", "alert": alert}
 
 
-# ---------------------------------------------------------------------------
-# Agent loop
-# ---------------------------------------------------------------------------
+@observe(as_type="generation", name="gemini-llm")
+def _llm_call(messages: list[dict]) -> Any:
+    response = litellm.completion(
+        model=MODEL,
+        api_key=os.environ["GEMINI_API_KEY"],
+        max_tokens=4096,
+        tools=TOOLS,
+        tool_choice="auto",
+        messages=messages,
+    )
+    if response.usage:
+        get_langfuse().update_current_observation(
+            model=MODEL,
+            usage_details={
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+            },
+        )
+    return response
 
+
+@observe(name="monitor-run")
 def run() -> list[dict]:
     """Run the monitor agent. Returns list of alerts that were fired."""
-    client = Groq(api_key=os.environ["GROQ_API_KEY"])
+    trigger = "Ingest complete. Check all disaster types for high or rising risk and send alerts where warranted."
+    get_langfuse().update_current_observation(input=trigger)
+
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                "Ingest complete. Check all disaster types for high or rising risk "
-                "and send alerts where warranted."
-            ),
-        },
+        {"role": "user", "content": trigger},
     ]
-
     alerts_fired: list[dict] = []
 
     while True:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            max_tokens=4096,
-            tools=TOOLS,
-            tool_choice="auto",
-            messages=messages,
-        )
+        response = _llm_call(messages)
 
         msg = response.choices[0].message
         finish_reason = response.choices[0].finish_reason
 
-        # Append assistant turn to history
         assistant_turn: dict = {"role": "assistant", "content": msg.content or ""}
         if msg.tool_calls:
             assistant_turn["tool_calls"] = [
@@ -217,7 +219,6 @@ def run() -> list[dict]:
             log.warning("Unexpected finish_reason: %s", finish_reason)
             break
 
-        # Execute tool calls and collect results
         for tc in msg.tool_calls:
             try:
                 inputs = json.loads(tc.function.arguments)
@@ -235,6 +236,8 @@ def run() -> list[dict]:
             })
 
     log.info("Monitor complete — %d alert(s) fired.", len(alerts_fired))
+    get_langfuse().update_current_observation(output={"alerts_fired": len(alerts_fired), "alerts": alerts_fired})
+    get_langfuse().flush()
     return alerts_fired
 
 
