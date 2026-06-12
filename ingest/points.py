@@ -24,6 +24,7 @@ POINTS: list[Point] = [
     Point(lat=36.17,  lon=-115.14, label="Las Vegas"),
     Point(lat=33.45,  lon=-112.07, label="Phoenix"),
     # Mountain West / wildfire + winter storm
+    Point(lat=39.09,  lon=-120.03, label="Lake Tahoe"),
     Point(lat=39.74,  lon=-104.98, label="Denver"),
     Point(lat=40.76,  lon=-111.89, label="Salt Lake City"),
     Point(lat=35.68,  lon=-105.94, label="Santa Fe"),

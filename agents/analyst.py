@@ -14,8 +14,12 @@ from typing import Any
 
 from groq import Groq
 from dotenv import load_dotenv
+from langfuse import observe, get_client as get_langfuse
 
-from api.db import get_top_risks, get_trend, query_point
+import httpx
+
+from api.db import check_cache, get_top_risks, get_trend, query_point
+from ingest.poller import fetch_and_store_point
 
 load_dotenv()
 
@@ -28,18 +32,81 @@ current and recent weather-driven disaster risk across the United States.
 
 You have access to tools that query a live ClickHouse database of hourly risk scores
 (0-100) for five disaster types: wildfire, flood, extreme_heat, winter_storm, high_wind.
-Scores are computed from Open-Meteo weather forecasts for ~20 major US cities.
+Scores are computed from Open-Meteo weather forecasts for any location.
+
+Data-fetching workflow (follow this order for every location):
+1. Call geocode to resolve the place name to lat/lon.
+2. Call check_cache to see if fresh data already exists for that lat/lon.
+3. If check_cache returns has_data=false, call fetch_and_store to pull live data from
+   Open-Meteo and write it to the database.
+4. Then query with query_point, get_top_risks, or get_trend as needed.
 
 Guidelines:
-- Always query before answering — never guess at numbers.
+- Always geocode before querying — never guess coordinates.
 - Use multiple tool calls when a question spans several locations or disaster types.
 - Give a concise plain-English answer first, then include the raw data that supports it.
 - Express scores as low (0-33), moderate (34-66), or high (67-100) in addition to the number.
 - When trend data shows a rising score, flag it explicitly as increasing risk.
-- If the database has no data yet (empty results), say so clearly rather than fabricating.
+- If geocoding fails or fetch_and_store fails, say so clearly rather than fabricating data.
 """
 
 TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "geocode",
+            "description": (
+                "Resolve a place name (city, region, landmark) to latitude and longitude. "
+                "Always call this first before any other location-based tool."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "place": {"type": "string", "description": "Place name to look up, e.g. 'Lake Tahoe' or 'Phoenix'."},
+                },
+                "required": ["place"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_cache",
+            "description": (
+                "Check whether fresh risk score data already exists in the database for a location. "
+                "Call this first before fetch_and_store to avoid unnecessary API calls."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lat":           {"type": "number", "description": "Latitude."},
+                    "lon":           {"type": "number", "description": "Longitude."},
+                    "disaster_type": {"type": "string", "enum": DISASTER_TYPES},
+                    "max_age_hours": {"type": "integer", "description": "Acceptable data age in hours (default 2)."},
+                },
+                "required": ["lat", "lon", "disaster_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_and_store",
+            "description": (
+                "Fetch a live weather forecast from Open-Meteo for a lat/lon, compute all five risk scores, "
+                "and write them to the database. Only call this after check_cache confirms data is missing or stale. "
+                "Covers all disaster types in one call — no need to call per type."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lat": {"type": "number", "description": "Latitude."},
+                    "lon": {"type": "number", "description": "Longitude."},
+                },
+                "required": ["lat", "lon"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -101,7 +168,40 @@ TOOLS: list[dict] = [
 ]
 
 
+def _geocode(place: str) -> dict:
+    resp = httpx.get(
+        "https://geocoding-api.open-meteo.com/v1/search",
+        params={"name": place, "count": 1, "language": "en", "format": "json"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    results = resp.json().get("results")
+    if not results:
+        return {"error": f"No location found for '{place}'"}
+    r = results[0]
+    return {
+        "lat": r["latitude"],
+        "lon": r["longitude"],
+        "name": r.get("name"),
+        "country": r.get("country"),
+        "admin1": r.get("admin1"),
+    }
+
+
+@observe(name="tool-call")
 def _dispatch_tool(name: str, inputs: dict) -> Any:
+    if name == "geocode":
+        return _geocode(inputs["place"])
+    if name == "check_cache":
+        return check_cache(
+            lat=inputs["lat"],
+            lon=inputs["lon"],
+            disaster_type=inputs["disaster_type"],
+            max_age_hours=inputs.get("max_age_hours", 2),
+        )
+    if name == "fetch_and_store":
+        rows_written = fetch_and_store_point(lat=inputs["lat"], lon=inputs["lon"])
+        return {"rows_written": rows_written, "status": "ok"}
     if name == "query_point":
         return query_point(
             lat=inputs["lat"],
@@ -124,6 +224,18 @@ def _dispatch_tool(name: str, inputs: dict) -> Any:
     raise ValueError(f"Unknown tool: {name}")
 
 
+@observe(as_type="generation", name="groq-llm")
+def _llm_call(client: Groq, messages: list[dict]) -> Any:
+    return client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=2048,
+        tools=TOOLS,
+        tool_choice="auto",
+        messages=messages,
+    )
+
+
+@observe(name="ask")
 def ask(question: str) -> dict:
     """
     Answer a natural language question about disaster risk.
@@ -139,13 +251,7 @@ def ask(question: str) -> dict:
     collected_data: list[dict] = []
 
     while True:
-        response = client.chat.completions.create(
-            model="llama3-groq-70b-8192-tool-use-preview",
-            max_tokens=2048,
-            tools=TOOLS,
-            tool_choice="auto",
-            messages=messages,
-        )
+        response = _llm_call(client, messages)
 
         msg = response.choices[0].message
         finish_reason = response.choices[0].finish_reason
@@ -184,6 +290,7 @@ def ask(question: str) -> dict:
                 "content": json.dumps(result, default=str),
             })
 
+    get_langfuse().flush()
     return {"answer": msg.content or "", "data": collected_data}
 
 

@@ -82,6 +82,28 @@ def write_scores(rows: list[dict]) -> None:
     log.info("Inserted %d rows into ClickHouse.", len(rows))
 
 
+def fetch_and_store_point(lat: float, lon: float) -> int:
+    """Fetch Open-Meteo forecast for a single lat/lon, score it, write to ClickHouse."""
+    from ingest.points import Point  # avoid circular at module level
+    pt = Point(lat=lat, lon=lon, label=f"{lat},{lon}")
+    om_data = fetch_open_meteo([pt])
+    rows: list[dict] = []
+    for hour_key, vars_dict in om_data.get(pt.key, {}).items():
+        scores = score_all(vars_dict)
+        try:
+            ts = datetime.strptime(hour_key, "%Y-%m-%dT%H:00").replace(tzinfo=timezone.utc)
+        except ValueError:
+            ts = datetime.strptime(hour_key, "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc)
+        for disaster_type, score in scores.items():
+            rows.append({
+                "lat": lat, "lon": lon, "timestamp": ts,
+                "disaster_type": disaster_type, "score": score,
+                "raw_variables": json.dumps(vars_dict),
+            })
+    write_scores(rows)
+    return len(rows)
+
+
 def run() -> None:
     log.info("=== HazardWatch ingest start ===")
     om_data = fetch_open_meteo(POINTS)

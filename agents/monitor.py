@@ -187,7 +187,7 @@ def run() -> list[dict]:
 
     while True:
         response = client.chat.completions.create(
-            model="llama3-groq-70b-8192-tool-use-preview",
+            model="llama-3.3-70b-versatile",
             max_tokens=4096,
             tools=TOOLS,
             tool_choice="auto",
