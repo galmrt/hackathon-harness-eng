@@ -371,17 +371,22 @@ async function sendQuestion() {
       return;
     }
 
-    const { answer, data } = await res.json();
+    const { answer, data, focus } = await res.json();
 
     // ── Thesys C1 rendering ──────────────────────────────────────────────────
-    // If the Thesys SDK is loaded, hand off the structured response for
-    // rich component rendering (charts, tables, maps). Falls back to plain text.
     if (window.Thesys && window.Thesys.render) {
       thinkingEl.innerHTML = '';
       thinkingEl.classList.add('thesys-render');
       window.Thesys.render(thinkingEl, { answer, data });
     } else {
       thinkingEl.innerHTML = renderMarkdown(answer);
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
+    // ── Focus map on queried location ────────────────────────────────────────
+    if (focus && focus.lat != null && focus.lon != null) {
+      map.flyTo([focus.lat, focus.lon], 10, { duration: 1.2 });
+      await loadMap(activeType); // reload so the newly fetched point appears
     }
     // ────────────────────────────────────────────────────────────────────────
 

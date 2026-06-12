@@ -35,6 +35,24 @@ def main():
         TTL timestamp + INTERVAL 30 DAY
     """)
     print("Table 'risk_scores' ready.")
+
+    client.command("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            fired_at      DateTime DEFAULT now(),
+            lat           Float64,
+            lon           Float64,
+            location_name String,
+            disaster_types String,
+            max_score     Float32,
+            trend_delta   Float32,
+            summary       String,
+            severity      LowCardinality(String)
+        )
+        ENGINE = MergeTree()
+        ORDER BY fired_at
+        TTL fired_at + INTERVAL 7 DAY
+    """)
+    print("Table 'alerts' ready.")
     print("Schema setup complete.")
 
 

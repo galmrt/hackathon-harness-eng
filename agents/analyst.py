@@ -47,7 +47,7 @@ Data-fetching workflow (follow this order for every location):
 Guidelines:
 - Always geocode before querying — never guess coordinates.
 - Use multiple tool calls when a question spans several locations or disaster types.
-- Give a concise plain-English answer first, then include the raw data that supports it.
+- Give a concise plain-English answer. Never dump raw numbers, JSON, or data tables — summarize findings in natural language only.
 - Express scores as low (0-33), moderate (34-66), or high (67-100) in addition to the number.
 - When trend data shows a rising score, flag it explicitly as increasing risk.
 - If geocoding fails or fetch_and_store fails, say so clearly rather than fabricating data.
@@ -303,7 +303,16 @@ def ask(question: str) -> dict:
     answer = msg.content or ""
     langfuse_context.update_current_observation(output=answer)
     langfuse_context.flush()
-    return {"answer": answer, "data": collected_data}
+
+    focus = None
+    for item in collected_data:
+        if item["tool"] == "geocode" and isinstance(item.get("result"), dict):
+            r = item["result"]
+            if "lat" in r and "lon" in r:
+                focus = {"lat": r["lat"], "lon": r["lon"], "name": r.get("name", "")}
+                break
+
+    return {"answer": answer, "data": collected_data, "focus": focus}
 
 
 if __name__ == "__main__":
