@@ -12,11 +12,10 @@ import logging
 import os
 from typing import Any
 
-from groq import Groq
+import litellm
+import httpx
 from dotenv import load_dotenv
 from langfuse import observe, get_client as get_langfuse
-
-import httpx
 
 from api.db import check_cache, get_top_risks, get_trend, query_point
 from ingest.poller import fetch_and_store_point
@@ -25,6 +24,7 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
+MODEL = "gemini/gemini-1.5-flash"
 DISASTER_TYPES = ["wildfire", "flood", "extreme_heat", "winter_storm", "high_wind"]
 
 SYSTEM_PROMPT = """You are HazardWatch's data analyst. You answer questions about
@@ -190,6 +190,7 @@ def _geocode(place: str) -> dict:
 
 @observe(name="tool-call")
 def _dispatch_tool(name: str, inputs: dict) -> Any:
+    get_langfuse().update_current_observation(input={"tool": name, "args": inputs})
     if name == "geocode":
         return _geocode(inputs["place"])
     if name == "check_cache":
@@ -224,15 +225,25 @@ def _dispatch_tool(name: str, inputs: dict) -> Any:
     raise ValueError(f"Unknown tool: {name}")
 
 
-@observe(as_type="generation", name="groq-llm")
-def _llm_call(client: Groq, messages: list[dict]) -> Any:
-    return client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+@observe(as_type="generation", name="gemini-llm")
+def _llm_call(messages: list[dict]) -> Any:
+    response = litellm.completion(
+        model=MODEL,
+        api_key=os.environ["GEMINI_API_KEY"],
         max_tokens=2048,
         tools=TOOLS,
         tool_choice="auto",
         messages=messages,
     )
+    if response.usage:
+        get_langfuse().update_current_observation(
+            model=MODEL,
+            usage_details={
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+            },
+        )
+    return response
 
 
 @observe(name="ask")
@@ -243,7 +254,8 @@ def ask(question: str) -> dict:
     Returns:
         {"answer": str, "data": list[dict]}
     """
-    client = Groq(api_key=os.environ["GROQ_API_KEY"])
+    get_langfuse().update_current_observation(input=question)
+
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question},
@@ -251,7 +263,7 @@ def ask(question: str) -> dict:
     collected_data: list[dict] = []
 
     while True:
-        response = _llm_call(client, messages)
+        response = _llm_call(messages)
 
         msg = response.choices[0].message
         finish_reason = response.choices[0].finish_reason
@@ -290,8 +302,10 @@ def ask(question: str) -> dict:
                 "content": json.dumps(result, default=str),
             })
 
+    answer = msg.content or ""
+    get_langfuse().update_current_observation(output=answer)
     get_langfuse().flush()
-    return {"answer": msg.content or "", "data": collected_data}
+    return {"answer": answer, "data": collected_data}
 
 
 if __name__ == "__main__":
