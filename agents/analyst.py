@@ -1,0 +1,187 @@
+"""
+Q&A Analyst Agent — called by POST /ask.
+
+Takes a natural language question, queries ClickHouse via tool use,
+and returns a plain-English answer + structured data.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Any
+
+import anthropic
+from dotenv import load_dotenv
+
+from api.db import get_top_risks, get_trend, query_point
+
+load_dotenv()
+
+log = logging.getLogger(__name__)
+
+DISASTER_TYPES = ["wildfire", "flood", "extreme_heat", "winter_storm", "high_wind"]
+
+SYSTEM_PROMPT = """You are HazardWatch's data analyst. You answer questions about
+current and recent weather-driven disaster risk across the United States.
+
+You have access to tools that query a live ClickHouse database of hourly risk scores
+(0–100) for five disaster types: wildfire, flood, extreme_heat, winter_storm, high_wind.
+Scores are computed from Jua.ai weather forecasts for ~20 major US cities.
+
+Guidelines:
+- Always query before answering — never guess at numbers.
+- Use multiple tool calls when a question spans several locations or disaster types.
+- Give a concise plain-English answer first, then include the raw data that supports it.
+- Express scores as low (0–33), moderate (34–66), or high (67–100) in addition to the number.
+- When trend data shows a rising score, flag it explicitly as increasing risk.
+- If the database has no data yet (empty results), say so clearly rather than fabricating.
+"""
+
+TOOLS: list[dict] = [
+    {
+        "name": "query_point",
+        "description": (
+            "Get hourly risk score time series for a specific lat/lon and disaster type. "
+            "Use this for questions about a specific city or location over time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lat":           {"type": "number", "description": "Latitude."},
+                "lon":           {"type": "number", "description": "Longitude."},
+                "disaster_type": {"type": "string", "enum": DISASTER_TYPES},
+                "hours":         {"type": "integer", "description": "How many past hours to include (default 24).", "default": 24},
+            },
+            "required": ["lat", "lon", "disaster_type"],
+        },
+    },
+    {
+        "name": "get_top_risks",
+        "description": (
+            "Return the highest-scoring locations for a disaster type in the last hour. "
+            "Use this for questions like 'where is wildfire risk highest right now?'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "disaster_type": {"type": "string", "enum": DISASTER_TYPES},
+                "limit":         {"type": "integer", "description": "Number of results (default 10).", "default": 10},
+            },
+            "required": ["disaster_type"],
+        },
+    },
+    {
+        "name": "get_trend",
+        "description": (
+            "Get the score change over the last N hours for a location and disaster type. "
+            "Positive delta means rising risk. Use this for 'is X getting worse?' questions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lat":           {"type": "number"},
+                "lon":           {"type": "number"},
+                "disaster_type": {"type": "string", "enum": DISASTER_TYPES},
+                "hours":         {"type": "integer", "default": 6},
+            },
+            "required": ["lat", "lon", "disaster_type"],
+        },
+    },
+]
+
+
+def _dispatch_tool(name: str, inputs: dict) -> Any:
+    if name == "query_point":
+        return query_point(
+            lat=inputs["lat"],
+            lon=inputs["lon"],
+            disaster_type=inputs["disaster_type"],
+            hours=inputs.get("hours", 24),
+        )
+    if name == "get_top_risks":
+        return get_top_risks(
+            disaster_type=inputs["disaster_type"],
+            limit=inputs.get("limit", 10),
+        )
+    if name == "get_trend":
+        return get_trend(
+            lat=inputs["lat"],
+            lon=inputs["lon"],
+            disaster_type=inputs["disaster_type"],
+            hours=inputs.get("hours", 6),
+        )
+    raise ValueError(f"Unknown tool: {name}")
+
+
+def ask(question: str) -> dict:
+    """
+    Answer a natural language question about disaster risk.
+
+    Returns:
+        {
+            "answer": str,          # plain-English response
+            "data": list[dict],     # raw query results used to form the answer
+        }
+    """
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    messages: list[dict] = [{"role": "user", "content": question}]
+    collected_data: list[dict] = []
+
+    while True:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=SYSTEM_PROMPT,
+            tools=TOOLS,
+            messages=messages,
+        )
+
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            break
+
+        if response.stop_reason != "tool_use":
+            log.warning("Unexpected stop_reason: %s", response.stop_reason)
+            break
+
+        tool_results = []
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            try:
+                result = _dispatch_tool(block.name, block.input)
+                collected_data.append({"tool": block.name, "input": block.input, "result": result})
+            except Exception as exc:
+                result = {"error": str(exc)}
+                log.error("Tool %s failed: %s", block.name, exc)
+
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": json.dumps(result, default=str),
+            })
+
+        messages.append({"role": "user", "content": tool_results})
+
+    # Extract the final text answer
+    answer = ""
+    for block in response.content:
+        if hasattr(block, "text"):
+            answer = block.text
+            break
+
+    return {"answer": answer, "data": collected_data}
+
+
+if __name__ == "__main__":
+    import sys
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    question = " ".join(sys.argv[1:]) or "Where is wildfire risk highest right now?"
+    result = ask(question)
+    print("\n=== Answer ===")
+    print(result["answer"])
+    print("\n=== Data ===")
+    print(json.dumps(result["data"], indent=2, default=str))
