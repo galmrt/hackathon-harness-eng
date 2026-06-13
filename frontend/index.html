@@ -88,6 +88,77 @@
 
     #map { flex: 1; }
 
+    /* ── Alerts panel ── */
+    .alerts-panel {
+      border-bottom: 1px solid #30363d;
+      background: #0d1117;
+      flex-shrink: 0;
+      max-height: 220px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .alerts-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .alerts-header:hover { background: #1c2128; }
+    .alerts-toggle { font-size: 0.7rem; color: #8b949e; }
+
+    .alerts-list {
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .alert-item {
+      padding: 8px 16px;
+      border-bottom: 1px solid #21262d;
+      font-size: 0.78rem;
+      line-height: 1.45;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .alert-item:hover { background: #161b22; }
+
+    .alert-item-top {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 3px;
+    }
+
+    .severity-badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 4px;
+      letter-spacing: 0.05em;
+      flex-shrink: 0;
+    }
+    .sev-watch    { background: #2d3f1e; color: #7ee787; border: 1px solid #3fb950; }
+    .sev-warning  { background: #3d2b00; color: #e3b341; border: 1px solid #bb8009; }
+    .sev-emergency{ background: #3d0000; color: #f85149; border: 1px solid #da3633; }
+
+    .alert-location { font-weight: 600; color: #e6edf3; }
+    .alert-types    { color: #8b949e; font-size: 0.72rem; }
+    .alert-summary  { color: #c9d1d9; margin-top: 2px; }
+    .alert-time     { color: #8b949e; font-size: 0.7rem; margin-top: 2px; }
+
+    .alerts-empty {
+      padding: 12px 16px;
+      color: #8b949e;
+      font-size: 0.78rem;
+    }
+
     /* ── Chat panel ── */
     .chat-panel {
       width: 380px;
@@ -232,11 +303,24 @@
     <div id="map"></div>
   </div>
 
-  <!-- Chat panel -->
+  <!-- Right panel: alerts + chat -->
   <div class="chat-panel">
+
+    <!-- Alerts -->
+    <div class="alerts-panel" id="alerts-panel">
+      <div class="alerts-header" id="alerts-header">
+        <span>⚠️ Active Alerts <span id="alerts-count" style="color:#8b949e;font-weight:400"></span></span>
+        <span class="alerts-toggle" id="alerts-toggle">▲</span>
+      </div>
+      <div class="alerts-list" id="alerts-list">
+        <div class="alerts-empty">No alerts in the last 24 hours.</div>
+      </div>
+    </div>
+
+    <!-- Chat -->
     <div class="chat-header">
       Ask HazardWatch
-      <small>Powered by Groq + Thesys C1</small>
+      <small>Powered by Gemini</small>
     </div>
     <div class="chat-messages" id="chat-messages">
       <div class="msg msg-system">Ask about current risk levels, trends, or compare cities.</div>
@@ -408,6 +492,80 @@ inputEl.addEventListener('input', () => {
   inputEl.style.height = 'auto';
   inputEl.style.height = inputEl.scrollHeight + 'px';
 });
+
+
+// ── Alerts panel ─────────────────────────────────────────────────────────────
+const alertsList  = document.getElementById('alerts-list');
+const alertsCount = document.getElementById('alerts-count');
+const alertsToggle = document.getElementById('alerts-toggle');
+let alertsCollapsed = false;
+
+document.getElementById('alerts-header').addEventListener('click', () => {
+  alertsCollapsed = !alertsCollapsed;
+  alertsList.style.display = alertsCollapsed ? 'none' : '';
+  alertsToggle.textContent = alertsCollapsed ? '▼' : '▲';
+});
+
+function severityClass(sev) {
+  if (sev === 'emergency') return 'sev-emergency';
+  if (sev === 'warning')   return 'sev-warning';
+  return 'sev-watch';
+}
+
+function timeAgo(isoStr) {
+  const ms = Date.now() - new Date(isoStr).getTime();
+  const m = Math.floor(ms / 60000);
+  if (m < 1)  return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+async function loadAlerts() {
+  try {
+    const res = await fetch('/alerts?hours=24&limit=20');
+    if (!res.ok) return;
+    const alerts = await res.json();
+
+    alertsCount.textContent = alerts.length ? `(${alerts.length})` : '';
+
+    if (!alerts.length) {
+      alertsList.innerHTML = '<div class="alerts-empty">No alerts in the last 24 hours.</div>';
+      return;
+    }
+
+    alertsList.innerHTML = alerts.map(a => {
+      const types = a.disaster_types.join(', ').replace(/_/g, ' ');
+      return `
+        <div class="alert-item" data-lat="${a.lat}" data-lon="${a.lon}">
+          <div class="alert-item-top">
+            <span class="severity-badge ${severityClass(a.severity)}">${a.severity.toUpperCase()}</span>
+            <span class="alert-location">${a.location_name || `${a.lat.toFixed(2)}, ${a.lon.toFixed(2)}`}</span>
+          </div>
+          <div class="alert-types">${types} · score ${a.max_score.toFixed(0)}</div>
+          <div class="alert-summary">${escapeHtml(a.summary)}</div>
+          <div class="alert-time">${timeAgo(a.fired_at)}</div>
+        </div>`;
+    }).join('');
+
+    // Click alert → fly map to that location
+    alertsList.querySelectorAll('.alert-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const lat = parseFloat(el.dataset.lat);
+        const lon = parseFloat(el.dataset.lon);
+        map.flyTo([lat, lon], 10, { duration: 1.2 });
+      });
+    });
+
+  } catch (e) {
+    console.warn('Alerts load failed:', e);
+  }
+}
+
+loadAlerts();
+setInterval(loadAlerts, 60 * 1000); // refresh every minute
+// ─────────────────────────────────────────────────────────────────────────────
 </script>
 
 </body>

@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from api.db import get_map_snapshot, get_top_risks, query_point
+from api.db import get_map_snapshot, get_recent_alerts, get_top_risks, query_point
 
 load_dotenv()
 
@@ -51,6 +51,12 @@ def top_risks(disaster_type: DisasterType, limit: int = 10):
 def point_timeseries(lat: float, lon: float, disaster_type: DisasterType, hours: int = 24):
     """Time-series scores for a specific location."""
     return query_point(lat, lon, disaster_type, hours)
+
+
+@app.get("/alerts")
+def alerts(hours: int = 24, limit: int = 20):
+    """Recent alerts fired by the monitor agent."""
+    return get_recent_alerts(hours=hours, limit=limit)
 
 
 class AskRequest(BaseModel):

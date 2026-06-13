@@ -5,7 +5,7 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: GROQ_API_KEY
+      - key: GEMINI_API_KEY
         sync: false
       - key: CLICKHOUSE_HOST
         sync: false
@@ -17,6 +17,12 @@ services:
         value: default
       - key: CLICKHOUSE_PASSWORD
         sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_BASE_URL
+        value: "https://us.cloud.langfuse.com"
 
   - type: cron
     name: hazardwatch-ingest
@@ -25,7 +31,7 @@ services:
     schedule: "0 * * * *"
     startCommand: python -m ingest.poller
     envVars:
-      - key: GROQ_API_KEY
+      - key: GEMINI_API_KEY
         sync: false
       - key: CLICKHOUSE_HOST
         sync: false
@@ -37,3 +43,9 @@ services:
         value: default
       - key: CLICKHOUSE_PASSWORD
         sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_BASE_URL
+        value: "https://us.cloud.langfuse.com"

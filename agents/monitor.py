@@ -20,7 +20,7 @@ load_dotenv()
 import litellm
 from langfuse.decorators import observe, langfuse_context
 
-from api.db import get_top_risks, get_trend
+from api.db import get_top_risks, get_trend, write_alert
 
 litellm.success_callback = ["langfuse"]
 litellm.failure_callback = ["langfuse"]
@@ -149,7 +149,6 @@ def _dispatch_tool(name: str, inputs: dict) -> Any:
 
 
 def _deliver_alert(alert: dict) -> dict:
-    """Stub — log the alert. Replace body with Composio call when ready."""
     severity = alert.get("severity", "watch").upper()
     types = ", ".join(alert.get("disaster_types", []))
     log.warning(
@@ -161,6 +160,10 @@ def _deliver_alert(alert: dict) -> dict:
         alert.get("trend_delta", 0),
         alert.get("summary", ""),
     )
+    try:
+        write_alert(alert)
+    except Exception as exc:
+        log.error("Failed to persist alert to DB: %s", exc)
     return {"status": "sent", "alert": alert}
 
 
