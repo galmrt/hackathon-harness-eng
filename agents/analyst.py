@@ -19,8 +19,8 @@ import litellm
 import httpx
 from langfuse.decorators import observe, langfuse_context
 
-from api.db import check_cache, get_top_risks, get_trend, query_point
-from ingest.poller import fetch_and_store_point
+from api.db import check_cache, get_top_risks, get_trend, query_point, query_point_by_date
+from ingest.poller import fetch_and_store_point, fetch_archive_point
 
 litellm.success_callback = ["langfuse"]
 litellm.failure_callback = ["langfuse"]
@@ -39,10 +39,13 @@ Scores are computed from Open-Meteo weather forecasts for any location.
 
 Data-fetching workflow (follow this order for every location):
 1. Call geocode to resolve the place name to lat/lon.
-2. Call check_cache to see if fresh data already exists for that lat/lon.
-3. If check_cache returns has_data=false, call fetch_and_store to pull live data from
-   Open-Meteo and write it to the database.
-4. Then query with query_point, get_top_risks, or get_trend as needed.
+2. For CURRENT/FORECAST questions:
+   a. Call check_cache to see if fresh data exists.
+   b. If not, call fetch_and_store to pull a live forecast.
+   c. Then query with query_point, get_top_risks, or get_trend.
+3. For HISTORICAL questions (specific past dates or date ranges):
+   a. Call fetch_archive with lat, lon, start_date, and end_date (YYYY-MM-DD).
+   b. Then call query_archive (NOT query_point) with the same lat, lon, disaster_type, start_date, and end_date to retrieve the stored scores.
 
 Guidelines:
 - Always geocode before querying — never guess coordinates.
@@ -113,6 +116,29 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_archive",
+            "description": (
+                "Fetch historical weather data from the Open-Meteo archive (available back to 1940) "
+                "for a lat/lon and date range, compute all five risk scores, and write them to the database. "
+                "Use this for historical questions like 'what was wildfire risk in California last August?' "
+                "or 'how bad was flooding in Houston in 2017?'. "
+                "After calling this, use query_point to read the stored scores."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lat":        {"type": "number", "description": "Latitude."},
+                    "lon":        {"type": "number", "description": "Longitude."},
+                    "start_date": {"type": "string", "description": "Start date in YYYY-MM-DD format (inclusive)."},
+                    "end_date":   {"type": "string", "description": "End date in YYYY-MM-DD format (inclusive). Keep ranges ≤7 days to avoid timeouts."},
+                },
+                "required": ["lat", "lon", "start_date", "end_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "query_point",
             "description": (
                 "Get hourly risk score time series for a specific lat/lon and disaster type. "
@@ -127,6 +153,28 @@ TOOLS: list[dict] = [
                     "hours":         {"type": "integer", "description": "How many past hours to include (default 24)."},
                 },
                 "required": ["lat", "lon", "disaster_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_archive",
+            "description": (
+                "Read stored historical risk scores for a lat/lon and disaster type within an absolute date range. "
+                "Use this AFTER fetch_archive has loaded the data — query_point cannot reach historical dates. "
+                "Returns hourly scores between start_date and end_date."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lat":           {"type": "number", "description": "Latitude."},
+                    "lon":           {"type": "number", "description": "Longitude."},
+                    "disaster_type": {"type": "string", "enum": DISASTER_TYPES},
+                    "start_date":    {"type": "string", "description": "Start date YYYY-MM-DD (inclusive)."},
+                    "end_date":      {"type": "string", "description": "End date YYYY-MM-DD (inclusive)."},
+                },
+                "required": ["lat", "lon", "disaster_type", "start_date", "end_date"],
             },
         },
     },
@@ -206,12 +254,28 @@ def _dispatch_tool(name: str, inputs: dict) -> Any:
     if name == "fetch_and_store":
         rows_written = fetch_and_store_point(lat=inputs["lat"], lon=inputs["lon"])
         return {"rows_written": rows_written, "status": "ok"}
+    if name == "fetch_archive":
+        rows_written = fetch_archive_point(
+            lat=inputs["lat"],
+            lon=inputs["lon"],
+            start_date=inputs["start_date"],
+            end_date=inputs["end_date"],
+        )
+        return {"rows_written": rows_written, "status": "ok", "note": "Use query_point to read the stored scores."}
     if name == "query_point":
         return query_point(
             lat=inputs["lat"],
             lon=inputs["lon"],
             disaster_type=inputs["disaster_type"],
             hours=inputs.get("hours", 24),
+        )
+    if name == "query_archive":
+        return query_point_by_date(
+            lat=inputs["lat"],
+            lon=inputs["lon"],
+            disaster_type=inputs["disaster_type"],
+            start_date=inputs["start_date"],
+            end_date=inputs["end_date"],
         )
     if name == "get_top_risks":
         return get_top_risks(

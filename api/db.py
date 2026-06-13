@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime
 import clickhouse_connect
 from dotenv import load_dotenv
 
@@ -35,6 +36,25 @@ def query_point(lat: float, lon: float, disaster_type: str, hours: int = 24) -> 
     return [{"timestamp": str(r[0]), "score": r[1], "raw_variables": r[2]} for r in result.result_rows]
 
 
+def query_point_by_date(lat: float, lon: float, disaster_type: str, start_date: str, end_date: str) -> list[dict]:
+    """Time-series risk scores for a location within an absolute date range (YYYY-MM-DD)."""
+    client = get_client()
+    result = client.query(
+        """
+        SELECT timestamp, score, raw_variables
+        FROM risk_scores
+        WHERE lat = {lat:Float64}
+          AND lon = {lon:Float64}
+          AND disaster_type = {disaster_type:String}
+          AND timestamp >= parseDateTimeBestEffort({start_date:String})
+          AND timestamp <  parseDateTimeBestEffort({end_date:String}) + INTERVAL 1 DAY
+        ORDER BY timestamp ASC
+        """,
+        parameters={"lat": lat, "lon": lon, "disaster_type": disaster_type, "start_date": start_date, "end_date": end_date},
+    )
+    return [{"timestamp": str(r[0]), "score": r[1], "raw_variables": r[2]} for r in result.result_rows]
+
+
 def get_top_risks(disaster_type: str, limit: int = 10) -> list[dict]:
     """Highest-scoring points for a disaster type in the last hour."""
     client = get_client()
@@ -52,24 +72,32 @@ def get_top_risks(disaster_type: str, limit: int = 10) -> list[dict]:
     return [{"lat": r[0], "lon": r[1], "score": r[2], "raw_variables": r[3]} for r in result.result_rows]
 
 
-def get_map_snapshot(disaster_type: str, hours_ago: int = 0) -> list[dict]:
-    """Latest score per grid point at a given point in time (0 = live)."""
+def get_map_snapshot(disaster_type: str, at_time: datetime | None = None) -> list[dict]:
+    """Latest score per grid point at or before at_time (None = live/now)."""
     client = get_client()
-    result = client.query(
-        """
-        SELECT lat, lon, argMax(score, timestamp) AS score
-        FROM risk_scores
-        WHERE disaster_type = {disaster_type:String}
-          AND timestamp >= now() - INTERVAL {window_start:Int32} HOUR
-          AND timestamp <= now() - INTERVAL {hours_ago:Int32} HOUR
-        GROUP BY lat, lon
-        """,
-        parameters={
-            "disaster_type": disaster_type,
-            "hours_ago": hours_ago,
-            "window_start": hours_ago + 2,
-        },
-    )
+    if at_time is None:
+        result = client.query(
+            """
+            SELECT lat, lon, argMax(score, timestamp) AS score
+            FROM risk_scores
+            WHERE disaster_type = {disaster_type:String}
+              AND timestamp >= now() - INTERVAL 3 MINUTE
+            GROUP BY lat, lon
+            """,
+            parameters={"disaster_type": disaster_type},
+        )
+    else:
+        result = client.query(
+            """
+            SELECT lat, lon, argMax(score, timestamp) AS score
+            FROM risk_scores
+            WHERE disaster_type = {disaster_type:String}
+              AND timestamp >= {at_time:DateTime} - INTERVAL 4 HOUR
+              AND timestamp <= {at_time:DateTime}
+            GROUP BY lat, lon
+            """,
+            parameters={"disaster_type": disaster_type, "at_time": at_time},
+        )
     return [{"lat": r[0], "lon": r[1], "score": r[2]} for r in result.result_rows]
 
 
@@ -93,6 +121,18 @@ def check_cache(lat: float, lon: float, disaster_type: str, max_age_hours: int =
         "has_data": count > 0,
         "row_count": int(count),
         "latest_timestamp": str(latest_ts) if latest_ts else None,
+    }
+
+
+def get_data_range() -> dict:
+    """Return the min/max timestamps of stored risk scores."""
+    client = get_client()
+    result = client.query("SELECT min(timestamp), max(timestamp), count() FROM risk_scores")
+    row = result.result_rows[0]
+    return {
+        "min_timestamp": str(row[0]) if row[0] else None,
+        "max_timestamp": str(row[1]) if row[1] else None,
+        "total_rows": int(row[2]),
     }
 
 

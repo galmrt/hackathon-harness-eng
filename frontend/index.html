@@ -76,24 +76,67 @@
     .time-controls {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       margin-left: 12px;
       border-left: 1px solid #30363d;
       padding-left: 12px;
+      flex-wrap: wrap;
     }
 
-    #time-slider {
-      width: 130px;
-      accent-color: #388bfd;
+    #time-date, #time-hour {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e6edf3;
+      font-size: 0.78rem;
+      padding: 3px 7px;
       cursor: pointer;
     }
+    #time-date:focus, #time-hour:focus { outline: none; border-color: #388bfd; }
+    #time-hour { width: 62px; }
 
-    .time-label {
+    #live-btn {
+      padding: 3px 10px;
+      border-radius: 6px;
+      border: 1px solid #3fb950;
+      background: #2d3f1e;
+      color: #3fb950;
       font-size: 0.78rem;
-      color: #e6edf3;
-      min-width: 60px;
+      font-weight: 600;
+      cursor: pointer;
     }
-    .time-label.live { color: #3fb950; font-weight: 600; }
+    #live-btn:hover { background: #3a5227; }
+
+    .archive-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      font-size: 0.78rem;
+      flex-wrap: wrap;
+    }
+    .archive-bar label { color: #8b949e; }
+    #archive-start, #archive-end {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e6edf3;
+      font-size: 0.78rem;
+      padding: 3px 7px;
+    }
+    #archive-btn {
+      padding: 3px 12px;
+      border-radius: 6px;
+      border: 1px solid #388bfd;
+      background: #1f3a5f;
+      color: #58a6ff;
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+    #archive-btn:hover { background: #263f6a; }
+    #archive-status { color: #8b949e; font-size: 0.75rem; }
 
     #region-btn {
       padding: 4px 12px;
@@ -344,12 +387,21 @@
         <button class="disaster-btn" data-type="high_wind">High Wind</button>
       </div>
       <div class="time-controls">
-        <label>Time:</label>
-        <input type="range" id="time-slider" min="0" max="24" value="24" step="1" />
-        <span class="time-label live" id="time-label">Live</span>
+        <label>Time (UTC):</label>
+        <input type="date" id="time-date" />
+        <select id="time-hour">
+          <!-- populated by JS -->
+        </select>
+        <button id="live-btn">● Live</button>
       </div>
       <button id="region-btn" title="Draw a rectangle to fetch risk data for that area">⬜ Fetch Region</button>
       <span id="region-status"></span>
+    </div>
+    <div class="archive-bar">
+      <label>Load day from archive:</label>
+      <input type="date" id="archive-date" min="1940-01-01" />
+      <button id="archive-btn">Load for all cities</button>
+      <span id="archive-status"></span>
     </div>
     <div id="map"></div>
   </div>
@@ -416,12 +468,11 @@ function scoreColor(score) {
 let circles = [];
 let activeType = 'wildfire';
 
-async function loadMap(disasterType, hoursAgo = 0) {
+async function loadMap(disasterType, atISO = null) {
   circles.forEach(c => map.removeLayer(c));
   circles = [];
-
   try {
-    const url = `/risks/map/${disasterType}` + (hoursAgo > 0 ? `?hours_ago=${hoursAgo}` : '');
+    const url = `/risks/map/${disasterType}` + (atISO ? `?at=${encodeURIComponent(atISO)}` : '');
     const res = await fetch(url);
     if (!res.ok) return;
     const points = await res.json();
@@ -442,40 +493,120 @@ async function loadMap(disasterType, hoursAgo = 0) {
   }
 }
 
-// Disaster type buttons
+// ── Disaster type buttons ─────────────────────────────────────────────────────
 document.getElementById('disaster-btns').addEventListener('click', e => {
   const btn = e.target.closest('.disaster-btn');
   if (!btn) return;
   document.querySelectorAll('.disaster-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   activeType = btn.dataset.type;
-  loadMap(activeType, currentHoursAgo());
+  loadMap(activeType, isLive ? null : selectedAtISO());
 });
 
-// Time slider
-const timeSlider = document.getElementById('time-slider');
-const timeLabel  = document.getElementById('time-label');
+// ── Time picker ───────────────────────────────────────────────────────────────
+const timeDateEl = document.getElementById('time-date');
+const timeHourEl = document.getElementById('time-hour');
+const liveBtnEl  = document.getElementById('live-btn');
+let isLive = true;
 
-function currentHoursAgo() {
-  return 24 - parseInt(timeSlider.value);
+// Populate hour selector
+for (let h = 0; h < 24; h++) {
+  const opt = document.createElement('option');
+  opt.value = h;
+  opt.textContent = `${String(h).padStart(2,'0')}:00`;
+  timeHourEl.appendChild(opt);
 }
 
-timeSlider.addEventListener('input', () => {
-  const hoursAgo = currentHoursAgo();
-  if (hoursAgo === 0) {
-    timeLabel.textContent = 'Live';
-    timeLabel.classList.add('live');
-  } else {
-    timeLabel.textContent = `${hoursAgo}h ago`;
-    timeLabel.classList.remove('live');
-  }
-  loadMap(activeType, hoursAgo);
-});
+function selectedAtISO() {
+  const d = timeDateEl.value;   // YYYY-MM-DD
+  const h = timeHourEl.value;   // 0-23
+  if (!d) return null;
+  return `${d}T${String(h).padStart(2,'0')}:00:00Z`;
+}
 
+// Default date to today
+timeDateEl.value = new Date().toISOString().slice(0, 10);
+
+function setLiveStyle(live) {
+  liveBtnEl.style.borderColor = live ? '#3fb950' : '#30363d';
+  liveBtnEl.style.color       = live ? '#3fb950' : '#8b949e';
+}
+
+function goLive() {
+  isLive = true;
+  setLiveStyle(true);
+  loadMap(activeType, null);
+}
+
+function goHistorical() {
+  isLive = false;
+  setLiveStyle(false);
+  const at = selectedAtISO();
+  if (at) loadMap(activeType, at);
+}
+
+liveBtnEl.addEventListener('click', goLive);
+timeDateEl.addEventListener('change', goHistorical);
+timeHourEl.addEventListener('change', goHistorical);
+
+setLiveStyle(true);
 loadMap(activeType);
-setInterval(() => {
-  if (currentHoursAgo() === 0) loadMap(activeType); // only auto-refresh when on Live
-}, 5 * 60 * 1000);
+setInterval(() => { if (isLive) loadMap(activeType); }, 5 * 60 * 1000);
+
+// ── Archive loader ────────────────────────────────────────────────────────────
+const archiveStatus = document.getElementById('archive-status');
+let pollTimer = null;
+
+async function refreshDataRange() {
+  try {
+    const res = await fetch('/data-range');
+    const { min_timestamp, max_timestamp, total_rows } = await res.json();
+    if (min_timestamp && max_timestamp) {
+      const minDate = min_timestamp.slice(0, 10);
+      const maxDate = max_timestamp.slice(0, 10);
+      document.getElementById('archive-start').min = '1940-01-01';
+      document.getElementById('archive-end').max   = maxDate;
+      return { minDate, maxDate, total_rows };
+    }
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
+document.getElementById('archive-btn').addEventListener('click', async () => {
+  const date = document.getElementById('archive-date').value;
+  if (!date) { archiveStatus.textContent = 'Pick a date first.'; return; }
+
+  archiveStatus.textContent = '⏳ Loading…';
+  const beforeRange = await refreshDataRange();
+
+  try {
+    await fetch('/backfill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date }),
+    });
+  } catch (e) {
+    archiveStatus.textContent = '✗ Failed to start backfill';
+    return;
+  }
+
+  // Poll until row count grows (data is arriving)
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const range = await refreshDataRange();
+    if (!range) return;
+    const grew = !beforeRange || range.total_rows > beforeRange.total_rows;
+    const coversStart = range.minDate <= start;
+    if (grew && coversStart) {
+      archiveStatus.textContent = `✓ Ready — ${date} loaded`;
+      clearInterval(pollTimer);
+      pollTimer = null;
+      setTimeout(() => { archiveStatus.textContent = ''; }, 6000);
+    } else {
+      archiveStatus.textContent = `⏳ Loading… (${range.total_rows.toLocaleString()} rows so far)`;
+    }
+  }, 3000);
+});
 
 
 // ── Region fetch ──────────────────────────────────────────────────────────────

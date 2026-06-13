@@ -8,12 +8,13 @@ from typing import Literal
 
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, HTTPException
+from datetime import datetime
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from api.db import get_map_snapshot, get_recent_alerts, get_top_risks, query_point
+from api.db import get_data_range, get_map_snapshot, get_recent_alerts, get_top_risks, query_point
 
 load_dotenv()
 
@@ -36,10 +37,17 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/data-range")
+def data_range():
+    """Returns the min/max timestamps and row count of stored risk scores."""
+    return get_data_range()
+
+
 @app.get("/risks/map/{disaster_type}")
-def map_snapshot(disaster_type: DisasterType, hours_ago: int = 0):
-    """Latest score per grid point — for map rendering. hours_ago=0 means live."""
-    return get_map_snapshot(disaster_type, hours_ago=hours_ago)
+def map_snapshot(disaster_type: DisasterType, at: str | None = None):
+    """Latest score per grid point. at=ISO datetime (UTC) for historical view, omit for live."""
+    at_time = datetime.fromisoformat(at.replace("Z", "+00:00")) if at else None
+    return get_map_snapshot(disaster_type, at_time=at_time)
 
 
 @app.get("/risks/top/{disaster_type}")
@@ -58,6 +66,27 @@ def point_timeseries(lat: float, lon: float, disaster_type: DisasterType, hours:
 def alerts(hours: int = 24, limit: int = 20):
     """Recent alerts fired by the monitor agent."""
     return get_recent_alerts(hours=hours, limit=limit)
+
+
+class BackfillRequest(BaseModel):
+    date: str          # YYYY-MM-DD — single day
+    lat: float | None = None
+    lon: float | None = None
+
+
+@app.post("/backfill")
+def backfill(body: BackfillRequest, background_tasks: BackgroundTasks):
+    """Load one day of archive data from Open-Meteo into ClickHouse."""
+    from ingest.poller import backfill_points  # noqa: PLC0415
+    from ingest.points import POINTS, Point    # noqa: PLC0415
+
+    if body.lat is not None and body.lon is not None:
+        points = [Point(lat=body.lat, lon=body.lon, label=f"{body.lat},{body.lon}")]
+    else:
+        points = list(POINTS)
+
+    background_tasks.add_task(backfill_points, points, body.date, body.date)
+    return {"status": "started", "points": len(points), "date": body.date}
 
 
 class RegionRequest(BaseModel):
