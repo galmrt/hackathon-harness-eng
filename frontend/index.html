@@ -7,6 +7,8 @@
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 
   <!-- Thesys C1 SDK — renders AI responses as interactive components -->
   <script src="https://cdn.thesys.dev/serve/v0/thesys.js" defer></script>
@@ -70,6 +72,26 @@
     }
 
     .map-toolbar label { font-size: 0.8rem; color: #8b949e; }
+
+    #region-btn {
+      padding: 4px 12px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #e6edf3;
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      margin-left: auto;
+    }
+    #region-btn:hover  { background: #30363d; }
+    #region-btn.active { border-color: #388bfd; background: #1f3a5f; color: #58a6ff; }
+
+    #region-status {
+      font-size: 0.75rem;
+      color: #8b949e;
+      margin-left: 8px;
+    }
 
     .disaster-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 
@@ -299,6 +321,8 @@
         <button class="disaster-btn" data-type="winter_storm">Winter Storm</button>
         <button class="disaster-btn" data-type="high_wind">High Wind</button>
       </div>
+      <button id="region-btn" title="Draw a rectangle to fetch risk data for that area">⬜ Fetch Region</button>
+      <span id="region-status"></span>
     </div>
     <div id="map"></div>
   </div>
@@ -402,6 +426,75 @@ document.getElementById('disaster-btns').addEventListener('click', e => {
 
 loadMap(activeType);
 setInterval(() => loadMap(activeType), 5 * 60 * 1000); // refresh every 5 min
+
+
+// ── Region fetch ──────────────────────────────────────────────────────────────
+const drawnItems = new L.FeatureGroup();
+map.addLayer(drawnItems);
+
+const drawControl = new L.Control.Draw({
+  draw: {
+    rectangle: { shapeOptions: { color: '#388bfd', weight: 2, fillOpacity: 0.1 } },
+    polygon: false, polyline: false, circle: false, circlemarker: false, marker: false,
+  },
+  edit: { featureGroup: drawnItems, remove: false },
+});
+
+const regionBtn    = document.getElementById('region-btn');
+const regionStatus = document.getElementById('region-status');
+let drawingActive  = false;
+
+regionBtn.addEventListener('click', () => {
+  if (drawingActive) return;
+  drawingActive = true;
+  regionBtn.classList.add('active');
+  regionBtn.textContent = '✏️ Draw rectangle…';
+  map.addControl(drawControl);
+  new L.Draw.Rectangle(map, drawControl.options.draw.rectangle).enable();
+});
+
+map.on(L.Draw.Event.CREATED, async (e) => {
+  drawnItems.clearLayers();
+  drawnItems.addLayer(e.layer);
+  map.removeControl(drawControl);
+  drawingActive = false;
+  regionBtn.classList.remove('active');
+  regionBtn.textContent = '⬜ Fetch Region';
+
+  const b = e.layer.getBounds();
+  regionStatus.textContent = 'Fetching…';
+  regionBtn.disabled = true;
+
+  try {
+    const res = await fetch('/fetch-region', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lat1: b.getSouth(), lon1: b.getWest(),
+        lat2: b.getNorth(), lon2: b.getEast(),
+      }),
+    });
+    const { points_fetched, rows_written } = await res.json();
+    regionStatus.textContent = `✓ ${points_fetched} points fetched`;
+    await loadMap(activeType);
+    setTimeout(() => { regionStatus.textContent = ''; }, 4000);
+  } catch (err) {
+    regionStatus.textContent = '✗ Fetch failed';
+    console.error(err);
+  } finally {
+    regionBtn.disabled = false;
+  }
+});
+
+map.on(L.Draw.Event.DRAWSTOP, () => {
+  if (drawingActive) {
+    drawingActive = false;
+    regionBtn.classList.remove('active');
+    regionBtn.textContent = '⬜ Fetch Region';
+    map.removeControl(drawControl);
+  }
+});
+// ─────────────────────────────────────────────────────────────────────────────
 
 
 // ── Chat ─────────────────────────────────────────────────────────────────────
