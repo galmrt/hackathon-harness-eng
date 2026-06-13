@@ -36,21 +36,21 @@ def _val(data: list, i: int, fallback: float) -> float:
     return float(v) if v is not None else fallback
 
 
-def fetch_open_meteo(points) -> dict[str, dict]:
-    """Return {point_key: {hour_iso: {var: value}}} for the next 48 h."""
+def fetch_open_meteo(points, past_days: int = 0) -> dict[str, dict]:
+    """Return {point_key: {hour_iso: {var: value}}}. Pass past_days>0 to include history."""
     result: dict[str, dict] = {}
-    with httpx.Client(timeout=30) as http:
+    with httpx.Client(timeout=60) as http:
         for pt in points:
-            resp = http.get(
-                OPEN_METEO_URL,
-                params={
-                    "latitude":      pt.lat,
-                    "longitude":     pt.lon,
-                    "hourly":        OPEN_METEO_VARS,
-                    "forecast_days": 2,
-                    "timezone":      "UTC",
-                },
-            )
+            params = {
+                "latitude":      pt.lat,
+                "longitude":     pt.lon,
+                "hourly":        OPEN_METEO_VARS,
+                "forecast_days": 2,
+                "timezone":      "UTC",
+            }
+            if past_days > 0:
+                params["past_days"] = min(past_days, 92)
+            resp = http.get(OPEN_METEO_URL, params=params)
             resp.raise_for_status()
             data = resp.json()["hourly"]
             times = data["time"]

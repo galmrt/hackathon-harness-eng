@@ -37,9 +37,9 @@ def health():
 
 
 @app.get("/risks/map/{disaster_type}")
-def map_snapshot(disaster_type: DisasterType):
-    """Latest score per grid point — for map rendering."""
-    return get_map_snapshot(disaster_type)
+def map_snapshot(disaster_type: DisasterType, hours_ago: int = 0):
+    """Latest score per grid point — for map rendering. hours_ago=0 means live."""
+    return get_map_snapshot(disaster_type, hours_ago=hours_ago)
 
 
 @app.get("/risks/top/{disaster_type}")

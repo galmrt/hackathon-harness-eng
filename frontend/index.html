@@ -73,6 +73,28 @@
 
     .map-toolbar label { font-size: 0.8rem; color: #8b949e; }
 
+    .time-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 12px;
+      border-left: 1px solid #30363d;
+      padding-left: 12px;
+    }
+
+    #time-slider {
+      width: 130px;
+      accent-color: #388bfd;
+      cursor: pointer;
+    }
+
+    .time-label {
+      font-size: 0.78rem;
+      color: #e6edf3;
+      min-width: 60px;
+    }
+    .time-label.live { color: #3fb950; font-weight: 600; }
+
     #region-btn {
       padding: 4px 12px;
       border-radius: 6px;
@@ -321,6 +343,11 @@
         <button class="disaster-btn" data-type="winter_storm">Winter Storm</button>
         <button class="disaster-btn" data-type="high_wind">High Wind</button>
       </div>
+      <div class="time-controls">
+        <label>Time:</label>
+        <input type="range" id="time-slider" min="0" max="24" value="24" step="1" />
+        <span class="time-label live" id="time-label">Live</span>
+      </div>
       <button id="region-btn" title="Draw a rectangle to fetch risk data for that area">⬜ Fetch Region</button>
       <span id="region-status"></span>
     </div>
@@ -389,12 +416,13 @@ function scoreColor(score) {
 let circles = [];
 let activeType = 'wildfire';
 
-async function loadMap(disasterType) {
+async function loadMap(disasterType, hoursAgo = 0) {
   circles.forEach(c => map.removeLayer(c));
   circles = [];
 
   try {
-    const res = await fetch(`/risks/map/${disasterType}`);
+    const url = `/risks/map/${disasterType}` + (hoursAgo > 0 ? `?hours_ago=${hoursAgo}` : '');
+    const res = await fetch(url);
     if (!res.ok) return;
     const points = await res.json();
     points.forEach(({ lat, lon, score }) => {
@@ -405,7 +433,7 @@ async function loadMap(disasterType) {
         fillOpacity: 0.7,
         weight: 1.5,
       });
-      c.bindPopup(`<strong>${disasterType.replace('_', ' ')}</strong><br>Score: ${score.toFixed(0)}/100`);
+      c.bindPopup(`<strong>${disasterType.replace(/_/g, ' ')}</strong><br>Score: ${score.toFixed(0)}/100`);
       c.addTo(map);
       circles.push(c);
     });
@@ -421,42 +449,55 @@ document.getElementById('disaster-btns').addEventListener('click', e => {
   document.querySelectorAll('.disaster-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   activeType = btn.dataset.type;
-  loadMap(activeType);
+  loadMap(activeType, currentHoursAgo());
+});
+
+// Time slider
+const timeSlider = document.getElementById('time-slider');
+const timeLabel  = document.getElementById('time-label');
+
+function currentHoursAgo() {
+  return 24 - parseInt(timeSlider.value);
+}
+
+timeSlider.addEventListener('input', () => {
+  const hoursAgo = currentHoursAgo();
+  if (hoursAgo === 0) {
+    timeLabel.textContent = 'Live';
+    timeLabel.classList.add('live');
+  } else {
+    timeLabel.textContent = `${hoursAgo}h ago`;
+    timeLabel.classList.remove('live');
+  }
+  loadMap(activeType, hoursAgo);
 });
 
 loadMap(activeType);
-setInterval(() => loadMap(activeType), 5 * 60 * 1000); // refresh every 5 min
+setInterval(() => {
+  if (currentHoursAgo() === 0) loadMap(activeType); // only auto-refresh when on Live
+}, 5 * 60 * 1000);
 
 
 // ── Region fetch ──────────────────────────────────────────────────────────────
-const drawnItems = new L.FeatureGroup();
-map.addLayer(drawnItems);
-
-const drawControl = new L.Control.Draw({
-  draw: {
-    rectangle: { shapeOptions: { color: '#388bfd', weight: 2, fillOpacity: 0.1 } },
-    polygon: false, polyline: false, circle: false, circlemarker: false, marker: false,
-  },
-  edit: { featureGroup: drawnItems, remove: false },
-});
-
 const regionBtn    = document.getElementById('region-btn');
 const regionStatus = document.getElementById('region-status');
-let drawingActive  = false;
+let rectangleDrawer = null;
+let drawingActive   = false;
+
+const drawShapeOptions = { color: '#388bfd', weight: 2, fillOpacity: 0.1 };
 
 regionBtn.addEventListener('click', () => {
   if (drawingActive) return;
   drawingActive = true;
   regionBtn.classList.add('active');
   regionBtn.textContent = '✏️ Draw rectangle…';
-  map.addControl(drawControl);
-  new L.Draw.Rectangle(map, drawControl.options.draw.rectangle).enable();
+  rectangleDrawer = new L.Draw.Rectangle(map, { shapeOptions: drawShapeOptions });
+  rectangleDrawer.enable();
 });
 
 map.on(L.Draw.Event.CREATED, async (e) => {
-  drawnItems.clearLayers();
-  drawnItems.addLayer(e.layer);
-  map.removeControl(drawControl);
+  // Immediately discard the drawn layer — we only need the bounds
+  e.layer.remove();
   drawingActive = false;
   regionBtn.classList.remove('active');
   regionBtn.textContent = '⬜ Fetch Region';
@@ -474,7 +515,7 @@ map.on(L.Draw.Event.CREATED, async (e) => {
         lat2: b.getNorth(), lon2: b.getEast(),
       }),
     });
-    const { points_fetched, rows_written } = await res.json();
+    const { points_fetched } = await res.json();
     regionStatus.textContent = `✓ ${points_fetched} points fetched`;
     await loadMap(activeType);
     setTimeout(() => { regionStatus.textContent = ''; }, 4000);
@@ -491,7 +532,6 @@ map.on(L.Draw.Event.DRAWSTOP, () => {
     drawingActive = false;
     regionBtn.classList.remove('active');
     regionBtn.textContent = '⬜ Fetch Region';
-    map.removeControl(drawControl);
   }
 });
 // ─────────────────────────────────────────────────────────────────────────────

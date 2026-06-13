@@ -52,19 +52,23 @@ def get_top_risks(disaster_type: str, limit: int = 10) -> list[dict]:
     return [{"lat": r[0], "lon": r[1], "score": r[2], "raw_variables": r[3]} for r in result.result_rows]
 
 
-def get_map_snapshot(disaster_type: str) -> list[dict]:
-    """Latest score per grid point for map rendering."""
+def get_map_snapshot(disaster_type: str, hours_ago: int = 0) -> list[dict]:
+    """Latest score per grid point at a given point in time (0 = live)."""
     client = get_client()
     result = client.query(
         """
-        SELECT lat, lon, score
+        SELECT lat, lon, argMax(score, timestamp) AS score
         FROM risk_scores
         WHERE disaster_type = {disaster_type:String}
-          AND timestamp = (
-              SELECT max(timestamp) FROM risk_scores WHERE disaster_type = {disaster_type:String}
-          )
+          AND timestamp >= now() - INTERVAL {window_start:Int32} HOUR
+          AND timestamp <= now() - INTERVAL {hours_ago:Int32} HOUR
+        GROUP BY lat, lon
         """,
-        parameters={"disaster_type": disaster_type},
+        parameters={
+            "disaster_type": disaster_type,
+            "hours_ago": hours_ago,
+            "window_start": hours_ago + 2,
+        },
     )
     return [{"lat": r[0], "lon": r[1], "score": r[2]} for r in result.result_rows]
 
